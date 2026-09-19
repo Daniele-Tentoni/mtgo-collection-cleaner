@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import DropZone from './components/DropZone.vue'
 import { buildDek, computeBinder, parseDek } from './dek'
+import { fetchRarities, RARITIES, rarityInfo } from './rarity'
 
 const collection = ref(null) // { name, cards }
 const decks = ref([]) // [{ name, cards }]
@@ -45,11 +46,47 @@ const delta = ref({}) // id riga -> variazione manuale rispetto al calcolo dai m
 // se cambiano collezione, mazzi od opzione, il calcolo di base cambia: le modifiche manuali ripartono da zero
 watch([collection, decks, byName], () => (delta.value = {}))
 
+const rarities = ref({}) // catId -> rarità
+const rarityStatus = ref('idle') // idle | loading | ok | error
+const rarityProgress = ref('')
+const rarityError = ref('')
+const rarityFilter = ref([]) // rarità selezionate; vuoto = tutte
+
+async function loadRarities() {
+  const col = collection.value
+  if (!col) return
+  rarityStatus.value = 'loading'
+  rarityProgress.value = ''
+  try {
+    const unique = [...new Map(col.cards.map((c) => [c.catId, c])).values()]
+    const map = await fetchRarities(unique, (done, total) => (rarityProgress.value = `${done}/${total}`))
+    if (collection.value !== col) return // nel frattempo hai caricato un'altra collezione
+    rarities.value = map
+    rarityStatus.value = 'ok'
+  } catch (e) {
+    if (collection.value !== col) return
+    rarityStatus.value = 'error'
+    rarityError.value = e.message
+  }
+}
+
+watch(collection, () => {
+  rarities.value = {}
+  rarityFilter.value = []
+  loadRarities()
+})
+
+function toggleRarity(id) {
+  const i = rarityFilter.value.indexOf(id)
+  if (i === -1) rarityFilter.value.push(id)
+  else rarityFilter.value.splice(i, 1)
+}
+
 // righe finali: quantità da esportare = base + variazione, sempre tra 0 e la quantità in collezione
 const rows = computed(() =>
   (result.value?.rows ?? []).map((r) => {
     const left = Math.min(r.quantity, Math.max(0, r.left + (delta.value[r.id] ?? 0)))
-    return { ...r, baseLeft: r.left, left }
+    return { ...r, baseLeft: r.left, left, rarity: rarities.value[r.catId] ?? null }
   }),
 )
 
@@ -77,6 +114,7 @@ const visibleRows = computed(() => {
     (r) =>
       (view.value === 'all' ||
         (view.value === 'kept' ? r.used > 0 : r.baseLeft > 0 || r.left > 0)) &&
+      (!rarityFilter.value.length || rarityFilter.value.includes(rarityInfo(r.rarity).id)) &&
       (!q || r.name.toLowerCase().includes(q)),
   )
 })
@@ -147,12 +185,12 @@ function download() {
         <template v-else>
           <div v-if="error || result.missing.length" class="body" style="padding-bottom: 0">
             <p v-if="error" class="errore">{{ error }}</p>
-            <div v-if="result.missing.length" class="avviso">
-              I mazzi richiedono carte che non hai in collezione:
+            <details v-if="result.missing.length" class="avviso">
+              <summary>{{ result.missing.length }} carte dei mazzi non sono in collezione</summary>
               <ul>
                 <li v-for="m in result.missing" :key="m.name">{{ m.qty }}× {{ m.name }}</li>
               </ul>
-            </div>
+            </details>
           </div>
 
           <div class="stats">
@@ -169,12 +207,24 @@ function download() {
             <input v-model="search" type="search" placeholder="Cerca una carta" />
             <button class="btn-download" :disabled="!totals.sell" @click="download">Scarica binder.dek</button>
           </div>
-
+          <div class="filtri">
+            <span>Rarità</span>
+            <button v-for="r in RARITIES" :key="r.id" class="chip" :class="{ attivo: rarityFilter.includes(r.id) }"
+              :aria-pressed="rarityFilter.includes(r.id)" :disabled="rarityStatus !== 'ok'" @click="toggleRarity(r.id)"><i
+                class="dot" :style="{ background: r.color }"></i>{{ r.label }}</button>
+            <span v-if="rarityStatus === 'loading'" class="stato">Carico le rarità da Scryfall… {{ rarityProgress
+            }}</span>
+            <span v-else-if="rarityStatus === 'error'" class="stato">
+              Rarità non disponibili: {{ rarityError }}
+              <button @click="loadRarities">Riprova</button>
+            </span>
+          </div>
           <div class="tabella">
             <table>
               <thead>
                 <tr>
                   <th>Carta</th>
+                  <th>Rarità</th>
                   <th class="num">In collezione</th>
                   <th class="num">Nei mazzi</th>
                   <th class="num">Da vendere</th>
@@ -183,6 +233,12 @@ function download() {
               <tbody>
                 <tr v-for="(r, i) in visibleRows" :key="i" :class="{ esaurita: !r.left }">
                   <td>{{ r.name }}</td>
+                  <td>
+                    <template v-if="r.rarity">
+                      <i class="dot" :style="{ background: rarityInfo(r.rarity).color }"></i>{{ rarityInfo(r.rarity).label
+                      }}
+                    </template>
+                  </td>
                   <td class="num">{{ r.quantity }}</td>
                   <td class="num">{{ r.used }}</td>
                   <td class="num vendi">
