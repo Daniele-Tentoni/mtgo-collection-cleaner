@@ -41,11 +41,11 @@ export function computeBinder(collection, decks, byName = false) {
   }
 
   const remaining = new Map([...needed].map(([k, v]) => [k, v.qty]))
-  const rows = collection.map((c) => {
+  const rows = collection.map((c, id) => {
     const k = keyOf(c)
     const used = Math.min(c.quantity, remaining.get(k) ?? 0)
     if (used) remaining.set(k, remaining.get(k) - used)
-    return { ...c, used, left: c.quantity - used }
+    return { ...c, id, used, left: c.quantity - used }
   })
   rows.sort((a, b) => a.name.localeCompare(b.name) || a.catId.localeCompare(b.catId))
 

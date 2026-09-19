@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import DropZone from './components/DropZone.vue'
 import { buildDek, computeBinder, parseDek } from './dek'
 
@@ -40,6 +40,31 @@ const result = computed(
   () => collection.value && computeBinder(collection.value.cards, decks.value.map((d) => d.cards), byName.value),
 )
 
+const delta = ref({}) // id riga -> variazione manuale rispetto al calcolo dai mazzi
+
+// se cambiano collezione, mazzi od opzione, il calcolo di base cambia: le modifiche manuali ripartono da zero
+watch([collection, decks, byName], () => (delta.value = {}))
+
+// righe finali: quantità da esportare = base + variazione, sempre tra 0 e la quantità in collezione
+const rows = computed(() =>
+  (result.value?.rows ?? []).map((r) => {
+    const left = Math.min(r.quantity, Math.max(0, r.left + (delta.value[r.id] ?? 0)))
+    return { ...r, baseLeft: r.left, left }
+  }),
+)
+
+const totals = computed(() => {
+  const owned = rows.value.reduce((n, r) => n + r.quantity, 0)
+  const sell = rows.value.reduce((n, r) => n + r.left, 0)
+  return { owned, sell, kept: owned - sell }
+})
+
+function adjust(row, step) {
+  const next = row.left + step
+  if (next < 0 || next > row.quantity) return // − mai sotto 0, + mai oltre la collezione
+  delta.value[row.id] = next - row.baseLeft
+}
+
 const tabs = [
   { id: 'all', label: 'Tutte' },
   { id: 'kept', label: 'Usate nei mazzi' },
@@ -47,17 +72,17 @@ const tabs = [
 ]
 
 const visibleRows = computed(() => {
-  if (!result.value) return []
   const q = search.value.trim().toLowerCase()
-  return result.value.rows.filter(
+  return rows.value.filter(
     (r) =>
-      (view.value === 'all' || (view.value === 'kept' ? r.used > 0 : r.left > 0)) &&
+      (view.value === 'all' ||
+        (view.value === 'kept' ? r.used > 0 : r.baseLeft > 0 || r.left > 0)) &&
       (!q || r.name.toLowerCase().includes(q)),
   )
 })
 
 function download() {
-  const blob = new Blob([buildDek(result.value.rows)], { type: 'application/xml' })
+  const blob = new Blob([buildDek(rows.value)], { type: 'application/xml' })
   const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'binder.dek' })
   a.click()
   setTimeout(() => URL.revokeObjectURL(a.href), 1000)
@@ -76,7 +101,8 @@ function download() {
         <section class="panel">
           <header>1. Collezione</header>
           <div class="body">
-            <DropZone title="Trascina qui il .dek della collezione" hint="oppure clicca per sceglierlo" @files="onCollection" />
+            <DropZone title="Trascina qui il .dek della collezione" hint="oppure clicca per sceglierlo"
+              @files="onCollection" />
             <div v-if="collection" class="file-row">
               <span class="nome" :title="collection.name">{{ collection.name }}</span>
               <span class="n">{{ count(collection.cards) }} carte</span>
@@ -87,7 +113,8 @@ function download() {
         <section class="panel">
           <header>2. Mazzi</header>
           <div class="body">
-            <DropZone title="Trascina qui i .dek dei mazzi" hint="uno per mazzo, anche più file insieme" multiple @files="onDecks" />
+            <DropZone title="Trascina qui i .dek dei mazzi" hint="uno per mazzo, anche più file insieme" multiple
+              @files="onDecks" />
             <div v-for="d in decks" :key="d.name" class="file-row">
               <span class="nome" :title="d.name">{{ d.name }}</span>
               <span class="n">{{ count(d.cards) }} carte</span>
@@ -103,7 +130,8 @@ function download() {
               <input v-model="byName" type="checkbox" />
               <span>
                 Considera uguali le stampe con lo stesso nome
-                <small>Utile se un mazzo usa una stampa diversa da quella in collezione. Di default si confronta il CatID.</small>
+                <small>Utile se un mazzo usa una stampa diversa da quella in collezione. Di default si confronta il
+                  CatID.</small>
               </span>
             </label>
           </div>
@@ -112,7 +140,8 @@ function download() {
 
       <section class="panel main">
         <div v-if="!result" class="vuoto">
-          <p>Carica il .dek della collezione per iniziare.<br />Poi aggiungi i mazzi: il binder si aggiorna a ogni file.</p>
+          <p>Carica il .dek della collezione per iniziare.<br />Poi aggiungi i mazzi: il binder si aggiorna a ogni file.
+          </p>
         </div>
 
         <template v-else>
@@ -127,20 +156,18 @@ function download() {
           </div>
 
           <div class="stats">
-            <div class="stat"><b>{{ result.totals.owned }}</b><span>carte in collezione</span></div>
-            <div class="stat"><b>{{ result.totals.kept }}</b><span>tenute per i mazzi</span></div>
-            <div class="stat vendita"><b>{{ result.totals.sell }}</b><span>da vendere</span></div>
+            <div class="stat"><b>{{ totals.owned }}</b><span>carte in collezione</span></div>
+            <div class="stat"><b>{{ totals.kept }}</b><span>tenute in collezione</span></div>
+            <div class="stat vendita"><b>{{ totals.sell }}</b><span>da vendere</span></div>
           </div>
 
           <div class="toolbar">
             <div class="tabs" role="tablist">
-              <button
-                v-for="t in tabs" :key="t.id" class="tab" :class="{ attivo: view === t.id }"
-                role="tab" :aria-selected="view === t.id" @click="view = t.id"
-              >{{ t.label }}</button>
+              <button v-for="t in tabs" :key="t.id" class="tab" :class="{ attivo: view === t.id }" role="tab"
+                :aria-selected="view === t.id" @click="view = t.id">{{ t.label }}</button>
             </div>
             <input v-model="search" type="search" placeholder="Cerca una carta" />
-            <button class="btn-download" :disabled="!result.totals.sell" @click="download">Scarica binder.dek</button>
+            <button class="btn-download" :disabled="!totals.sell" @click="download">Scarica binder.dek</button>
           </div>
 
           <div class="tabella">
@@ -158,7 +185,14 @@ function download() {
                   <td>{{ r.name }}</td>
                   <td class="num">{{ r.quantity }}</td>
                   <td class="num">{{ r.used }}</td>
-                  <td class="num vendi">{{ r.left }}</td>
+                  <td class="num vendi">
+                    <div class="stepper">
+                      <button :disabled="r.left <= 0" :aria-label="`Riduci ${r.name}`" @click="adjust(r, -1)">−</button>
+                      <span :class="{ modificato: r.left !== r.baseLeft }">{{ r.left }}</span>
+                      <button :disabled="r.left >= r.quantity" :aria-label="`Aumenta ${r.name}`"
+                        @click="adjust(r, 1)">+</button>
+                    </div>
+                  </td>
                 </tr>
               </tbody>
             </table>
